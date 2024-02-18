@@ -1,0 +1,6 @@
+asyncio
+opencv-python
+numpy
+rich
+pyautogui
+ipaddress
