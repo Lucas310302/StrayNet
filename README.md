@@ -13,16 +13,6 @@ StrayNet is a powerful remote administration tool (RAT) designed for remote cont
 - **DDoS Attack**: Conduct SYN flood DDoS attacks on target IP addresses.
 - **Persistence and Admin Privileges**: Automatically set up persistence and admin privileges on client machines for Windows and Unix systems.
 
-## Setup
-
-### Requirements
-
-Before running StrayNet, ensure you have the following dependencies installed:
-
-- Python 3.x
-- OpenCV (`pip install opencv-python`)
-- PyAutoGUI (`pip install pyautogui`)
-
 ### Installation
 
 1. Clone the StrayNet repository to your local machine:
