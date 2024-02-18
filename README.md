@@ -1,5 +1,7 @@
 # StrayNet
 
+![Straynet Screenshot](https://github.com/Lucas310302/StrayNet/blob/main/img.png)
+
 ## Introduction
 
 StrayNet is a powerful remote administration tool (RAT) designed for remote control and management of client machines. With StrayNet, you can remotely execute commands, stream webcam and screen feeds, capture screenshots, conduct DDoS attacks, and more. Whether you're a system administrator needing to manage multiple machines remotely or a security professional conducting penetration testing, StrayNet provides the tools you need to efficiently and effectively control client systems.
